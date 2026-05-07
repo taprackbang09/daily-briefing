@@ -47,4 +47,3 @@ jobs:
             git commit -m "Update Daily Briefing: $(date +'%Y-%m-%d')"
             git push
           fi
-          fi
