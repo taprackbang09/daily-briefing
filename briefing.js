@@ -59,13 +59,29 @@ function extractContent(html, method) {
       const title = $(el).find('title').text().trim();
       const url   = $(el).find('guid').text().trim()
                  || $(el).find('link').text().trim();
-      if (title.length > 10 && !seen.has(title)) {
+      if (title.length > 10 && url && !seen.has(title)) {
         seen.add(title);
         items.push({ title, url });
       }
     });
+    
+    // Fallback for Mezha.ua: if RSS extraction failed, try HTML-based extraction
+    if (items.length === 0 && html.includes('mezha')) {
+      const $ = load(html);
+      $('h2 a, h3 a, .entry-title a, .post-title a, a[href*="news"]').each((_, el) => {
+        const title = $(el).text().trim();
+        const url = $(el).attr('href');
+        if (title.length > 10 && url && !seen.has(title)) {
+          seen.add(title);
+          items.push({ 
+            title, 
+            url: url.startsWith('http') ? url : 'https://mezha.ua' + url 
+          });
+        }
+      });
+    }
   } else if (method === 'mezha') {
-    $('h2 a, h3 a, .entry-title a, .post-title a').each((_, el) => {
+    $('h2 a, h3 a, .entry-title a, .post-title a, a[href*="news"]').each((_, el) => {
       const title = $(el).text().trim();
       const url = $(el).attr('href');
       if (title.length > 10 && url && !seen.has(title)) {
