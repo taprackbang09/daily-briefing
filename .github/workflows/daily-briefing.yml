@@ -2,12 +2,12 @@ name: Daily Briefing Generation
 
 on:
   schedule:
-    # This runs at 05:00 UTC (8:00 AM Kyiv time)
+    # Runs at 05:00 UTC (08:00 AM Kyiv time)
     - cron: '0 5 * * *'
-  workflow_dispatch: # This allows you to run it manually from the "Actions" tab
+  workflow_dispatch: # Allows you to trigger it manually from the Actions tab
 
 permissions:
-  contents: write # Allows the bot to push the HTML files back to your repo
+  contents: write # Required to push the generated HTML files back to the repo
 
 jobs:
   build:
@@ -20,9 +20,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24' # Upgraded to Node 24
 
       - name: Install dependencies
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         run: npm install
 
       - name: Run Scraper
@@ -34,6 +36,15 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add briefing/
-          git commit -m "Update Daily Briefing: $(date +'%Y-%m-%d')" || exit 0
-          git push
+
+          # Stage generated briefing pages and the root redirect.
+          git add briefing/*.html index.html || true
+
+          # Commit only if there are actual changes.
+          if git diff --cached --quiet; then
+            echo "No generated changes to commit."
+          else
+            git commit -m "Update Daily Briefing: $(date +'%Y-%m-%d')"
+            git push
+          fi
+          fi
