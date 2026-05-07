@@ -1,0 +1,4 @@
+node_modules/
+.env
+briefing/*.html
+!briefing/index.html

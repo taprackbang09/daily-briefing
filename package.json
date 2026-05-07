@@ -1,0 +1,11 @@
+{
+  "name": "daily-briefing",
+  "version": "1.0.0",
+  "main": "briefing.js",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cheerio": "^1.2.0",
+    "dotenv": "^16.6.1",
+    "marked": "^12.0.2"
+  }
+}
