@@ -133,15 +133,44 @@ async function main() {
   const briefingHtml = marked(briefingMarkdown);
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const html = `<!DOCTYPE html><html lang="uk"><head><meta charset="UTF-8"><style>body{font-family:-apple-system,sans-serif;max-width:650px;margin:40px auto;background:#faf8f5;padding:0 20px;line-height:1.6}h2{color:#e16a3d}a{color:#c08060;text-decoration:none}li{margin-bottom:8px}</style></head><body><h1>Брифінг за ${new Date().toLocaleDateString('uk-UA')}</h1>${briefingHtml}</body></html>`;
+  const html = `<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Briefing — ${todayStr}</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #faf8f5; color: #333; line-height: 1.6; max-width: 650px; margin: 40px auto; padding: 0 20px; }
+        h1 { border-bottom: 2px solid #e16a3d; padding-bottom: 10px; font-size: 1.5rem; }
+        h2 { color: #e16a3d; font-size: 1.1rem; text-transform: uppercase; margin-top: 1.5rem; letter-spacing: 1px; }
+        ul { list-style: none; padding: 0; }
+        li { margin-bottom: 12px; padding-left: 18px; position: relative; }
+        li::before { content: "•"; position: absolute; left: 0; color: #e16a3d; font-weight: bold; }
+        a { color: #c08060; text-decoration: none; font-weight: bold; margin-left: 5px; }
+    </style>
+</head>
+<body>
+    <h1>БРИФІНГ ЗА ${new Date().toLocaleDateString('uk-UA')}</h1>
+    <div class="content">${briefingHtml}</div>
+    <div style="margin-top: 40px; font-size: 0.8rem; color: #999; text-align: center;">Generated via Gemini 2.5 Flash</div>
+</body>
+</html>`;
 
   const briefingDir = path.join(__dirname, 'briefing');
   if (!fs.existsSync(briefingDir)) fs.mkdirSync(briefingDir);
   
-  fs.writeFileSync(path.join(briefingDir, `${todayStr}.html`), html);
-  fs.writeFileSync(path.join(briefingDir, 'index.html'), `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${todayStr}.html"></head></html>`);
+  // 1. Записуємо файл щоденного звіту в папку briefing/
+  const dailyFilePath = path.join(briefingDir, `${todayStr}.html`);
+  fs.writeFileSync(dailyFilePath, html);
+
+  // 2. Записуємо файл редиректу index.html в КОРЕНЕВУ директорію
+  // Додаємо 'briefing/' до URL в мета-тегу
+  const indexHtml = `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=briefing/${todayStr}.html"></head></html>`;
+  fs.writeFileSync(path.join(__dirname, 'index.html'), indexHtml);
   
-  console.log(`\n✨ Готово! Файл: briefing/${todayStr}.html`);
+  console.log(`\n✨ Готово!`);
+  console.log(`📁 Звіт: briefing/${todayStr}.html`);
+  console.log(`🚀 Редирект створено в корені: index.html`);
 }
 
 main().catch(console.error);
