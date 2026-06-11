@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-
 require('dotenv').config();
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { load } = require('cheerio');
 const { marked } = require('marked');
+const sanitizeHtml = require('sanitize-html');
 const fs = require('fs');
 const path = require('path');
 
@@ -12,151 +13,424 @@ const path = require('path');
 // ---------------------------------------------------------------------------
 
 const SOURCES = [
-  { name: 'Мілітарний',  url: 'https://mil.in.ua/uk/feed/' },
-  { name: 'DOU',         url: 'https://dou.ua/lenta/feeds/news/' },
-  { name: 'Mezha.ua',    url: 'https://mezha.ua/feed/' },
-  { name: 'Бабель',      url: 'https://babel.ua/rss' },
-  { name: 'The Defender',url: 'https://thedefender.media/uk/feed/' },
-  { name: 'Village',     url: 'https://www.village.com.ua/feed' },
-  { name: 'The War Zone',url: 'https://www.twz.com/feed' },
+  {
+    name: 'Мілітарний',
+    url: 'https://militarnyi.com/uk/feed/',
+    fallbackType: 'scrape',
+    fallbackUrl: 'https://militarnyi.com/uk/',
+    minItems: 5,
+    scrapeRules: {
+      includePathContains: ['/uk/news/', '/news/'],
+      excludePathStartsWith: ['/uk/tag/', '/tag/', '/uk/author/', '/author/', '/category/'],
+      minTitleLength: 18,
+    },
+  },
+  {
+    name: 'DOU',
+    url: 'https://dou.ua/feed/',
+    minItems: 1,
+  },
+  {
+    name: 'Mezha.ua',
+    url: 'https://mezha.ua/feed/',
+    fallbackType: 'scrape',
+    fallbackUrl: 'https://mezha.ua/',
+    minItems: 5,
+    scrapeRules: {
+      includePathContains: ['/post/', '/news/', '/article/'],
+      excludePathStartsWith: ['/tag/', '/author/', '/category/'],
+      minTitleLength: 18,
+    },
+  },
+  {
+    name: 'Бабель',
+    url: 'https://babel.ua/rss',
+    fallbackType: 'scrape',
+    fallbackUrl: 'https://babel.ua/',
+    minItems: 1,
+    scrapeRules: {
+      includePathContains: ['/news/', '/probono/'],
+      excludePathStartsWith: ['/tag/', '/tags/', '/authors/', '/author/', '/category/'],
+      minTitleLength: 18,
+    },
+  },
+  {
+    name: 'The Defender',
+    url: 'https://thedefender.media/uk/feed/',
+    fallbackType: 'scrape',
+    fallbackUrl: 'https://thedefender.media/uk/',
+    minItems: 1,
+    scrapeRules: {
+      includePathContains: ['/uk/'],
+      excludePathStartsWith: ['/uk/tag/', '/uk/tags/', '/uk/author/', '/uk/authors/', '/uk/category/'],
+      minTitleLength: 18,
+    },
+  },
+  {
+    name: 'Village',
+    url: 'https://www.village.com.ua/feeds/posts.atom',
+    minItems: 1,
+  },
+  {
+    name: 'The War Zone',
+    url: 'https://www.twz.com/feed',
+    minItems: 1,
+  },
 ];
 
-const MAX_ITEMS     = 30;           // per source, before 24 h filter
-const HOURS_BACK    = 24;
-const CUTOFF_MS     = HOURS_BACK * 60 * 60 * 1000;
+const MAX_ITEMS = 30;
+const HOURS_BACK = 24;
+const CUTOFF_MS = HOURS_BACK * 60 * 60 * 1000;
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1500;
+const CONCURRENCY = 3;
+
+if (!process.env.GEMINI_API_KEY) {
+  console.error('❌ GEMINI_API_KEY is missing in .env');
+  process.exit(1);
+}
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ---------------------------------------------------------------------------
-// Fetch
+// Utilities
 // ---------------------------------------------------------------------------
 
-async function fetchFeed(source) {
-  console.log(`  Fetching ${source.name} …`);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function stripHtml(str = '') {
+  return str.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeUrl(raw, base = null) {
+  if (!raw) return '';
   try {
-    const resp = await fetch(source.url, {
-      headers: {
-        'User-Agent':      'Mozilla/5.0 (compatible; DailyBriefingBot/2.0)',
-        'Accept':          'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
-        'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!resp.ok) {
-      console.error(`  ✗ ${source.name}: HTTP ${resp.status}`);
-      return null;
-    }
-    return await resp.text();
-  } catch (err) {
-    console.error(`  ✗ ${source.name}: ${err.message}`);
-    return null;
+    const u = base ? new URL(raw, base) : new URL(raw);
+    [
+      'utm_source',
+      'utm_medium',
+      'utm_campaign',
+      'utm_term',
+      'utm_content',
+      'fbclid',
+      'gclid',
+      'mc_cid',
+      'mc_eid',
+    ].forEach((p) => u.searchParams.delete(p));
+    u.hash = '';
+    return u.href;
+  } catch {
+    return String(raw).trim();
   }
 }
 
-// ---------------------------------------------------------------------------
-// Parse — handles both RSS 2.0 and Atom feeds
-// ---------------------------------------------------------------------------
-
-/**
- * Strip HTML tags and collapse whitespace from a string.
- */
-function stripHtml(str = '') {
-  return str.replace(/<[^>]+>/g, ' ').replace(/\s\s+/g, ' ').trim();
-}
-
-/**
- * Try every common date field and return a Date (or null if unparseable).
- */
-function parseDate($el, $) {
+function parseDate($el) {
   const raw =
     $el.find('pubDate').first().text() ||
     $el.find('published').first().text() ||
     $el.find('updated').first().text() ||
-    $el.find('dc\\:date, date').first().text();
-
+    $el.find('dc\\:date, date').first().text() ||
+    $el.find('time').first().attr('datetime') ||
+    '';
   if (!raw) return null;
   const d = new Date(raw.trim());
-  return isNaN(d.getTime()) ? null : d;
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function parseFeed(xml, sourceName) {
-  const $ = load(xml, { xmlMode: true });
-  const now  = Date.now();
-  const items = [];
-  const seen  = new Set();
+function shouldExcludePath(pathname, rules = {}) {
+  const p = pathname.toLowerCase();
 
-  // Support both RSS <item> and Atom <entry>
-  $('item, entry').each((_, el) => {
-    const $el = $(el);
+  if (rules.excludePathStartsWith?.some((x) => p.startsWith(x.toLowerCase()))) return true;
+  if (rules.excludePathContains?.some((x) => p.includes(x.toLowerCase()))) return true;
 
-    // Title
-    const title = stripHtml($el.find('title').first().text()).replace(/^<!\[CDATA\[|\]\]>$/g, '').trim();
-    if (!title || title.length < 10 || seen.has(title)) return;
+  if (rules.includePathContains?.length) {
+    if (!rules.includePathContains.some((x) => p.includes(x.toLowerCase()))) return true;
+  }
 
-    // URL — try multiple fields
-    const url =
-      $el.find('link[href]').first().attr('href') ||       // Atom <link href="…"/>
-      $el.find('link').first().text().trim() ||             // RSS <link>
-      $el.find('guid').first().text().trim() ||             // RSS <guid>
-      '';
-
-    // Published date
-    const pubDate = parseDate($el, $);
-    if (pubDate && (now - pubDate.getTime()) > CUTOFF_MS) return; // older than cutoff
-
-    // Summary / description for richer AI context
-    const summary = stripHtml(
-      $el.find('summary, description, content\\:encoded').first().text()
-    ).slice(0, 300);
-
-    if (!url) return;
-    seen.add(title);
-    items.push({ title, url, summary, pubDate });
-  });
-
-  console.log(`  ✓ ${sourceName}: ${items.length} item(s) in last ${HOURS_BACK}h`);
-  return items.slice(0, MAX_ITEMS);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
-// AI summarisation
+// Fetch with retries
+// ---------------------------------------------------------------------------
+
+async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (compatible; DailyBriefingBot/4.0)',
+    'Accept':
+      'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, */*',
+    'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
+    ...options.headers,
+  };
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        ...options,
+        headers,
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20000),
+      });
+
+      if ([403, 404, 410].includes(resp.status)) {
+        return { text: null, status: resp.status };
+      }
+
+      if (!resp.ok) {
+        if (attempt < retries) {
+          await sleep(RETRY_DELAY_MS * (attempt + 1));
+          continue;
+        }
+        return { text: null, status: resp.status };
+      }
+
+      return { text: await resp.text(), status: resp.status };
+    } catch {
+      if (attempt < retries) {
+        await sleep(RETRY_DELAY_MS * (attempt + 1));
+      } else {
+        return { text: null, status: null };
+      }
+    }
+  }
+
+  return { text: null, status: null };
+}
+
+// ---------------------------------------------------------------------------
+// Fetch dispatcher
+// ---------------------------------------------------------------------------
+
+async function fetchSource(source) {
+  const primary = await fetchWithRetry(source.url);
+  if (primary.text) return { text: primary.text, mode: 'rss', status: primary.status };
+
+  if (!source.fallbackUrl) return null;
+
+  if (source.fallbackType === 'rss' && source.altUrl) {
+    const alt = await fetchWithRetry(source.altUrl);
+    if (alt.text) return { text: alt.text, mode: 'rss', status: alt.status };
+  }
+
+  if (source.fallbackType === 'scrape') {
+    const html = await fetchWithRetry(source.fallbackUrl);
+    if (html.text) return { text: html.text, mode: 'scrape', status: html.status };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Parse RSS/Atom
+// ---------------------------------------------------------------------------
+
+function parseFeed(xml, sourceName, sourceUrl = '') {
+  try {
+    const $ = load(xml, { xmlMode: true });
+    const now = Date.now();
+    const items = [];
+    const seen = new Set();
+
+    $('item, entry').each((_, el) => {
+      const $el = $(el);
+
+      const title = stripHtml($el.find('title').first().text())
+        .replace(/^<!\[CDATA\[|\]\]>$/g, '')
+        .trim();
+
+      if (!title || title.length < 8 || seen.has(title)) return;
+
+      let url =
+        $el.find('link[rel="alternate"]').attr('href') ||
+        $el.find('link[href]').first().attr('href') ||
+        $el.find('link').first().text().trim() ||
+        $el.find('guid').first().text().trim() ||
+        '';
+      url = normalizeUrl(url, sourceUrl);
+
+      const pubDate = parseDate($el);
+      if (pubDate && now - pubDate.getTime() > CUTOFF_MS) return;
+
+      const rawSummary =
+        $el.find('summary').first().text() ||
+        $el.find('description').first().text() ||
+        $el.find('content\\:encoded').first().text() ||
+        $el.find('content').first().text() ||
+        '';
+
+      const summary = stripHtml(rawSummary).slice(0, 320);
+
+      seen.add(title);
+      items.push({
+        title,
+        url,
+        summary,
+        pubDate: pubDate ? pubDate.toISOString() : null,
+      });
+    });
+
+    console.log(`  ✓ ${sourceName}: ${items.length} RSS item(s)`);
+    return items.slice(0, MAX_ITEMS);
+  } catch (err) {
+    console.error(`  ✗ ${sourceName} parseFeed: ${err.message}`);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scrape fallback
+// ---------------------------------------------------------------------------
+
+function scrapeHomepage(html, sourceName, baseUrl, rules = {}) {
+  try {
+    const $ = load(html);
+    const base = new URL(baseUrl);
+    const items = [];
+    const seen = new Set();
+
+    const minTitleLength = rules.minTitleLength ?? 18;
+
+    $('a').each((_, el) => {
+      const $el = $(el);
+      const title = $el.text().replace(/\s+/g, ' ').trim();
+      const rawHref = $el.attr('href');
+
+      if (!title || title.length < minTitleLength) return;
+      if (!rawHref || rawHref.startsWith('#') || rawHref.startsWith('javascript:')) return;
+
+      const fullUrl = normalizeUrl(rawHref, base.href);
+      if (!fullUrl) return;
+      if (!fullUrl.startsWith(base.origin)) return;
+
+      let u;
+      try {
+        u = new URL(fullUrl);
+      } catch {
+        return;
+      }
+
+      const pathname = u.pathname || '/';
+      const segments = pathname.split('/').filter(Boolean);
+
+      if (segments.length < 2) return; // reduce nav/root links
+      if (shouldExcludePath(pathname, rules)) return;
+
+      const key = `${title}|${pathname}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      items.push({
+        title,
+        url: fullUrl,
+        summary: '',
+        pubDate: null,
+      });
+    });
+
+    console.log(`  ✓ ${sourceName}: ${items.length} scraped item(s)`);
+    return items.slice(0, MAX_ITEMS);
+  } catch (err) {
+    console.error(`  ✗ ${sourceName} scrape: ${err.message}`);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Option B: RSS first, scrape if too few items
+// ---------------------------------------------------------------------------
+
+async function collectSourceItems(source) {
+  const fetched = await fetchSource(source);
+  if (!fetched) return { name: source.name, items: [], mode: 'none' };
+
+  let items = [];
+  let mode = fetched.mode;
+
+  if (fetched.mode === 'rss') {
+    items = parseFeed(fetched.text, source.name, source.url);
+
+    const minItems = source.minItems ?? 1;
+    if (source.fallbackType === 'scrape' && source.fallbackUrl && items.length < minItems) {
+      console.log(
+        `  → ${source.name}: only ${items.length} RSS item(s), trying scrape fallback...`
+      );
+
+      const alt = await fetchWithRetry(source.fallbackUrl);
+      if (alt.text) {
+        const scraped = scrapeHomepage(
+          alt.text,
+          source.name,
+          source.fallbackUrl,
+          source.scrapeRules || {}
+        );
+
+        const rssCount = items.length;
+        const scrapedCount = scraped.length;
+
+        if (scrapedCount > rssCount) {
+          items = scraped;
+          mode = 'scrape';
+          console.log(`  ✓ ${source.name}: switched to scrape (${scrapedCount} > ${rssCount})`);
+        } else {
+          console.log(`  → ${source.name}: keeping RSS (${rssCount} >= ${scrapedCount})`);
+        }
+      }
+    }
+  } else {
+    items = scrapeHomepage(
+      fetched.text,
+      source.name,
+      source.fallbackUrl,
+      source.scrapeRules || {}
+    );
+  }
+
+  return { name: source.name, items, mode };
+}
+
+// ---------------------------------------------------------------------------
+// AI summarization
 // ---------------------------------------------------------------------------
 
 async function generateBriefing(sourceData) {
-  const parts = sourceData
-    .filter(s => s.items.length > 0)
-    .map(s =>
-      `## ${s.name}\n` +
-      s.items
-        .map(i => `- ${i.title}${i.summary ? ' — ' + i.summary : ''} [link](${i.url})`)
-        .join('\n')
+  const blocks = sourceData
+    .filter((s) => s.items.length > 0)
+    .map(
+      (s) =>
+        `## ${s.name}\n` +
+        s.items
+          .map((i) => `- ${i.title}${i.summary ? ` — ${i.summary}` : ''} [джерело](${i.url})`)
+          .join('\n')
     )
     .join('\n\n');
 
-  if (!parts) return '⚠️ No news items found in the last 24 hours.';
+  if (!blocks) return '⚠️ Немає новин за останні 24 години.';
 
   const model = genAI.getGenerativeModel(
-    { model: 'gemini-2.5-flash' },
+    { model: 'gemini-3.5-flash' },
     { apiVersion: 'v1' }
   );
 
-  const prompt = `Ти — персональний news curator. Зроби стислий daily briefing українською мовою на основі новин за останні 24 години.
+  const prompt = `Ти — редактор щоденного новинного дайджесту українською.
 
-Структура відповіді:
-1. **## 🔥 Головне** — 3–6 найважливіших подій. Якщо одна тема присутня в кількох джерелах — об'єднай в один пункт.
-2. Тематичні секції (наприклад: **## 🛡️ Оборона та безпека**, **## 💻 Технології**, **## 🌍 Світ**, **## 🇺🇦 Україна**, **## 🔬 Наука & Суспільство** — використовуй лише ті, що доречні).
-3. Кожен пункт — одне речення + посилання у форматі [↗](url).
-4. Не повторюй новини між секціями.
-5. Відповідай ЛИШЕ markdown, без додаткових пояснень.
+Правила:
+- Відповідай ЛИШЕ markdown.
+- Структура:
+  1) ## 🔥 Головне (3–6 пунктів)
+  2) Тематичні секції (лише доречні)
+- Кожен пункт: одне коротке речення + [↗](url)
+- Без дублювань, без вигадок, без повторів між секціями.
+- Якщо одна новина є в різних джерелах — об'єднай в один пункт.
 
-Дані джерел:\n${parts}`;
+Дані:
+${blocks}`;
 
   try {
     const result = await model.generateContent(prompt);
     return result.response.text();
   } catch (err) {
-    console.error('Gemini error:', err.message);
-    return `**AI Error:** ${err.message}`;
+    console.error(`Gemini error: ${err.message}`);
+    return `## 🔥 Головне\n- Не вдалося згенерувати AI-дайджест. Нижче сирі заголовки.\n\n${blocks}`;
   }
 }
 
@@ -164,130 +438,67 @@ async function generateBriefing(sourceData) {
 // HTML renderer
 // ---------------------------------------------------------------------------
 
-function buildHtml(briefingMarkdown, todayStr) {
-  const briefingHtml = marked(briefingMarkdown);
+function renderMarkdownSafe(md) {
+  const raw = marked.parse(md);
+  return sanitizeHtml(raw, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['h1', 'h2']),
+    allowedAttributes: { a: ['href', 'target', 'rel'] },
+    allowedSchemes: ['http', 'https', 'mailto'],
+  });
+}
+
+function buildHtml(markdown, todayStr) {
+  const briefingHtml = renderMarkdownSafe(markdown);
   const dateLabel = new Date().toLocaleDateString('uk-UA', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
   });
 
-  return `<!DOCTYPE html>
+  return `<!doctype html>
 <html lang="uk">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Брифінг — ${todayStr}</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'Georgia', 'Times New Roman', serif;
-      background: #faf8f3;
-      color: #2b2620;
-      line-height: 1.7;
-      min-height: 100vh;
-    }
-
-    .page {
-      max-width: 700px;
-      margin: 0 auto;
-      padding: 48px 24px 80px;
-    }
-
-    header {
-      border-bottom: 3px double #c47a3a;
-      padding-bottom: 20px;
-      margin-bottom: 36px;
-    }
-
-    .label {
-      font-family: 'Courier New', monospace;
-      font-size: 0.68rem;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: #c47a3a;
-      margin-bottom: 8px;
-    }
-
-    header h1 {
-      font-size: 1.9rem;
-      font-weight: 700;
-      line-height: 1.2;
-      color: #1a1410;
-    }
-
-    .content h2 {
-      font-family: 'Courier New', monospace;
-      font-size: 0.75rem;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: #c47a3a;
-      margin: 36px 0 14px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid #e8e0d0;
-    }
-
-    .content ul {
-      list-style: none;
-      padding: 0;
-    }
-
-    .content li {
-      position: relative;
-      padding: 10px 0 10px 20px;
-      border-bottom: 1px solid #f0ebe0;
-      font-size: 0.97rem;
-    }
-
-    .content li::before {
-      content: "▸";
-      position: absolute;
-      left: 0;
-      color: #c47a3a;
-      font-size: 0.8rem;
-      top: 12px;
-    }
-
-    .content li:last-child { border-bottom: none; }
-
-    .content a {
-      color: #c47a3a;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.85em;
-      margin-left: 4px;
-      border-bottom: 1px solid transparent;
-      transition: border-color 0.15s;
-    }
-
-    .content a:hover { border-color: #c47a3a; }
-
-    .content p { margin: 8px 0; font-size: 0.97rem; }
-
-    footer {
-      margin-top: 60px;
-      padding-top: 20px;
-      border-top: 1px solid #e0d8cc;
-      text-align: center;
-      font-family: 'Courier New', monospace;
-      font-size: 0.7rem;
-      letter-spacing: 0.1em;
-      color: #b0a090;
-    }
+    body { max-width: 760px; margin: 40px auto; padding: 0 16px; font-family: Georgia, serif; line-height: 1.6; color: #222; }
+    h1 { margin-bottom: 20px; }
+    h2 { margin-top: 28px; }
+    a { color: #b35a1f; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { padding-left: 20px; }
+    li { margin: 8px 0; }
+    footer { margin-top: 40px; font-size: 12px; color: #777; }
   </style>
 </head>
 <body>
-  <div class="page">
-    <header>
-      <div class="label">Daily Intelligence Briefing</div>
-      <h1>${dateLabel}</h1>
-    </header>
-    <div class="content">${briefingHtml}</div>
-    <footer>
-      GENERATED VIA GEMINI 2.5 FLASH &nbsp;·&nbsp; SOURCES: ${SOURCES.length} RSS FEEDS &nbsp;·&nbsp; WINDOW: LAST ${HOURS_BACK}H
-    </footer>
-  </div>
+  <h1>${dateLabel}</h1>
+  ${briefingHtml}
+  <footer>Generated via Gemini · Sources: ${SOURCES.length} · Window: ${HOURS_BACK}h</footer>
 </body>
 </html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency helper
+// ---------------------------------------------------------------------------
+
+async function mapLimit(arr, limit, fn) {
+  const out = new Array(arr.length);
+  let idx = 0;
+
+  const workers = Array.from({ length: Math.min(limit, arr.length) }, async () => {
+    while (true) {
+      const i = idx++;
+      if (i >= arr.length) break;
+      out[i] = await fn(arr[i], i);
+    }
+  });
+
+  await Promise.all(workers);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,45 +506,63 @@ function buildHtml(briefingMarkdown, todayStr) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log('🗞️  Starting briefing generation …\n');
+  console.log('🗞️ Starting briefing generation...');
 
-  const results = await Promise.all(
-    SOURCES.map(async (source) => {
-      try {
-        const xml   = await fetchFeed(source);
-        const items = xml ? parseFeed(xml, source.name) : [];
-        if (!xml) console.log(`  ✓ ${source.name}: skipped (fetch failed)`);
-        return { name: source.name, items };
-      } catch (err) {
-        console.error(`  ✗ ${source.name}: unexpected — ${err.message}`);
-        return { name: source.name, items: [] };
-      }
-    })
-  );
+  const results = await mapLimit(SOURCES, CONCURRENCY, async (source) => {
+    try {
+      return await collectSourceItems(source);
+    } catch (err) {
+      console.error(`  ✗ ${source.name}: ${err.message}`);
+      return { name: source.name, items: [], mode: 'error' };
+    }
+  });
 
-  const totalItems = results.reduce((n, s) => n + s.items.length, 0);
-  console.log(`\n📦 Total items collected: ${totalItems}`);
+  const totalItems = results.reduce((sum, s) => sum + s.items.length, 0);
 
-  console.log('\n🧠 Gemini is summarising …');
-  const briefingMarkdown = await generateBriefing(results);
+  console.log(`📦 Total items: ${totalItems}`);
+  for (const r of results) {
+    console.log(`  - ${r.name}: ${r.items.length} (${r.mode})`);
+  }
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  const html     = buildHtml(briefingMarkdown, todayStr);
+  const markdown = await generateBriefing(results);
 
-  // Write output files
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const html = buildHtml(markdown, todayStr);
+
   const briefingDir = path.join(__dirname, 'briefing');
-  if (!fs.existsSync(briefingDir)) fs.mkdirSync(briefingDir, { recursive: true });
+  fs.mkdirSync(briefingDir, { recursive: true });
 
   const outPath = path.join(briefingDir, `${todayStr}.html`);
-  fs.writeFileSync(outPath, html);
+  fs.writeFileSync(outPath, html, 'utf8');
 
-  // Redirect index files
-  const redirectHtml = (target) =>
-    `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${target}"></head></html>`;
-  fs.writeFileSync(path.join(__dirname, 'index.html'), redirectHtml(`briefing/${todayStr}.html`));
-  fs.writeFileSync(path.join(briefingDir, 'index.html'), redirectHtml(`${todayStr}.html`));
+  const redirect = (target) =>
+    `<!doctype html><html><head><meta http-equiv="refresh" content="0;url=${target}"></head></html>`;
 
-  console.log(`\n✅ Done! → ${outPath}`);
+  fs.writeFileSync(path.join(__dirname, 'index.html'), redirect(`briefing/${todayStr}.html`), 'utf8');
+  fs.writeFileSync(path.join(briefingDir, 'index.html'), redirect(`${todayStr}.html`), 'utf8');
+
+  fs.writeFileSync(
+    path.join(briefingDir, 'latest.json'),
+    JSON.stringify(
+      {
+        date: todayStr,
+        totalItems,
+        sources: results.map((r) => ({
+          name: r.name,
+          mode: r.mode,
+          count: r.items.length,
+        })),
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  console.log(`✅ Done! ${outPath}`);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
