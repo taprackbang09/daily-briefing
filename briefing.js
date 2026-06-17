@@ -96,7 +96,7 @@ const HISTORY_DAYS = 5;
 const MAX_DATE_VERIFICATIONS_PER_SOURCE = 20;
 
 // Supported Gemini models with fallback chain
-const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
 if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY is missing in .env');
