@@ -95,6 +95,9 @@ const HISTORY_DAYS = 5;
 // a lot of scrape candidates.
 const MAX_DATE_VERIFICATIONS_PER_SOURCE = 20;
 
+// Supported Gemini models with fallback chain
+const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+
 if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY is missing in .env');
   process.exit(1);
@@ -195,10 +198,12 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
       }
 
       return { text: await resp.text(), status: resp.status };
-    } catch {
-      if (attempt < retries) {
+    } catch (err) {
+      const isLastAttempt = attempt >= retries;
+      if (!isLastAttempt) {
         await sleep(RETRY_DELAY_MS * (attempt + 1));
       } else {
+        console.error(`  ⚠️ Fetch error after ${attempt + 1} attempt(s): ${err.message}`);
         return { text: null, status: null };
       }
     }
@@ -384,8 +389,13 @@ function extractDateFromArticleHtml(html) {
   const match = text.match(/\b(\d{2})\.(\d{2})\.(\d{4})\b/);
   if (match) {
     const [, dd, mm, yyyy] = match;
-    const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-    if (!Number.isNaN(d.getTime())) return d;
+    // Validate month and day ranges before creating date
+    const monthNum = parseInt(mm, 10);
+    const dayNum = parseInt(dd, 10);
+    if (monthNum >= 1 && monthNum <= 12 && dayNum >= 1 && dayNum <= 31) {
+      const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
   }
 
   return null;
@@ -512,9 +522,13 @@ function dedupeAgainstHistory(results, historyMap) {
 
   for (const r of results) {
     const before = r.items.length;
+    // Filter before mutating history to avoid inconsistent dedup if URLs repeat across sources
     r.items = r.items.filter((i) => !historyMap.has(i.url));
     removed += before - r.items.length;
+  }
 
+  // Add all remaining items to history after filtering all sources
+  for (const r of results) {
     for (const i of r.items) {
       historyMap.set(i.url, now);
     }
@@ -545,12 +559,19 @@ async function generateBriefing(sourceData) {
 
   if (!blocks) return '⚠️ Немає новин за останні 24 години.';
 
-  const model = genAI.getGenerativeModel(
-    { model: 'gemini-3.5-flash' },
-    { apiVersion: 'v1' }
-  );
+  // Try models in order of preference with fallback
+  let result = null;
+  let lastError = null;
 
-  const prompt = `Ти — редактор щоденного новинного дайджесту українською.
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      console.log(`  → Attempting to use model: ${modelName}`);
+      const model = genAI.getGenerativeModel(
+        { model: modelName },
+        { apiVersion: 'v1' }
+      );
+
+      const prompt = `Ти — редактор щоденного новинного дайджесту українською.
 
 Правила:
 - Відповідай ЛИШЕ markdown.
@@ -564,13 +585,24 @@ async function generateBriefing(sourceData) {
 Дані:
 ${blocks}`;
 
-  try {
-    const result = await model.generateContent(prompt);
-    return result.response.text();
-  } catch (err) {
-    console.error(`Gemini error: ${err.message}`);
-    return `## 🔥 Головне\n- Не вдалося згенерувати AI-дайджест. Нижче сирі заголовки.\n\n${blocks}`;
+      const response = await model.generateContent(prompt);
+      result = response.response.text();
+      console.log(`  ✓ Successfully generated briefing with ${modelName}`);
+      break;
+    } catch (err) {
+      lastError = err;
+      console.error(`  ✗ Model ${modelName} failed: ${err.message}`);
+      // Continue to next model in fallback chain
+    }
   }
+
+  if (result) {
+    return result;
+  }
+
+  // All models failed, return graceful fallback
+  console.error(`Gemini error (all ${GEMINI_MODELS.length} model(s) failed): ${lastError?.message}`);
+  return `## 🔥 Головне\n- Не вдалося згенерувати AI-дайджест. Нижче сирі заголовки.\n\n${blocks}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -681,12 +713,16 @@ function refreshAllNavigation(briefingDir) {
     const filePath = path.join(briefingDir, `${date}.html`);
     const content = fs.readFileSync(filePath, 'utf8');
 
+    // Create new regex without /g flag for test, use separate regex for replace
     const navBlockRegex = new RegExp(
       `${NAV_START}[\\s\\S]*?${NAV_END}`,
       'g'
     );
+    const testRegex = new RegExp(
+      `${NAV_START}[\\s\\S]*?${NAV_END}`
+    );
 
-    if (!navBlockRegex.test(content)) {
+    if (!testRegex.test(content)) {
       // Old page generated before nav existed — skip rather than corrupt it.
       console.log(`  ⚠️ ${date}.html has no nav markers, skipping (regenerate it to add nav)`);
       return;
@@ -702,16 +738,28 @@ function refreshAllNavigation(briefingDir) {
 }
 
 // ---------------------------------------------------------------------------
-// Concurrency helper
+// Concurrency helper - fixed race condition
 // ---------------------------------------------------------------------------
 
 async function mapLimit(arr, limit, fn) {
   const out = new Array(arr.length);
   let idx = 0;
+  const mutex = { locked: false, queue: [] };
+
+  const getNextIndex = async () => {
+    // Simple spinlock to prevent race condition on idx increment
+    while (mutex.locked) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+    mutex.locked = true;
+    const i = idx++;
+    mutex.locked = false;
+    return i;
+  };
 
   const workers = Array.from({ length: Math.min(limit, arr.length) }, async () => {
     while (true) {
-      const i = idx++;
+      const i = await getNextIndex();
       if (i >= arr.length) break;
       out[i] = await fn(arr[i], i);
     }
