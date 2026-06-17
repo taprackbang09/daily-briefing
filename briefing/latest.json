@@ -1,0 +1,41 @@
+{
+  "date": "2026-06-17",
+  "totalItems": 1,
+  "sources": [
+    {
+      "name": "Мілітарний",
+      "mode": "scrape",
+      "count": 0
+    },
+    {
+      "name": "DOU",
+      "mode": "rss",
+      "count": 0
+    },
+    {
+      "name": "Mezha.ua",
+      "mode": "rss",
+      "count": 0
+    },
+    {
+      "name": "Бабель",
+      "mode": "scrape",
+      "count": 1
+    },
+    {
+      "name": "The Defender",
+      "mode": "scrape",
+      "count": 0
+    },
+    {
+      "name": "Village",
+      "mode": "rss",
+      "count": 0
+    },
+    {
+      "name": "The War Zone",
+      "mode": "rss",
+      "count": 0
+    }
+  ]
+}
