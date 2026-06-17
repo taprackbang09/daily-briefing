@@ -90,6 +90,11 @@ const CONCURRENCY = 3;
 // reappearing day after day.
 const HISTORY_DAYS = 5;
 
+// Cap how many scraped items get an extra per-article fetch to verify
+// their real publish date. Keeps runtime bounded on sources that return
+// a lot of scrape candidates.
+const MAX_DATE_VERIFICATIONS_PER_SOURCE = 20;
+
 if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY is missing in .env');
   process.exit(1);
@@ -341,6 +346,85 @@ function scrapeHomepage(html, sourceName, baseUrl, rules = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Date verification for scraped items
+// ---------------------------------------------------------------------------
+//
+// scrapeHomepage() can only see a title + URL on the homepage, so every
+// scraped item gets pubDate: null. That means the CUTOFF_MS freshness check
+// in parseFeed() never applies to scraped items — an article that's been
+// linked on a homepage for days (e.g. under a "related"/featured block)
+// looks exactly as "fresh" as something published an hour ago. This fetches
+// each scraped article's own page and looks for a real publish date, then
+// drops anything that turns out to be older than HOURS_BACK.
+
+function extractDateFromArticleHtml(html) {
+  const $ = load(html);
+
+  const metaSelectors = [
+    'meta[property="article:published_time"]',
+    'meta[name="date"]',
+    'meta[name="pubdate"]',
+    'meta[itemprop="datePublished"]',
+    'time[datetime]',
+  ];
+
+  for (const sel of metaSelectors) {
+    const $el = $(sel).first();
+    const val = $el.attr('content') || $el.attr('datetime');
+    if (val) {
+      const d = new Date(val);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
+
+  // Fallback for sites (like thedefender.media) that just print a
+  // DD.MM.YYYY date near the top of the article with no machine-readable
+  // markup at all.
+  const text = $('body').text();
+  const match = text.match(/\b(\d{2})\.(\d{2})\.(\d{4})\b/);
+  if (match) {
+    const [, dd, mm, yyyy] = match;
+    const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+
+  return null;
+}
+
+async function verifyScrapedItemDates(items, sourceName) {
+  const toCheck = items.slice(0, MAX_DATE_VERIFICATIONS_PER_SOURCE);
+  const skipped = items.slice(MAX_DATE_VERIFICATIONS_PER_SOURCE);
+
+  const now = Date.now();
+  let droppedStale = 0;
+  let droppedUnverifiable = 0;
+
+  const checked = await mapLimit(toCheck, CONCURRENCY, async (item) => {
+    const res = await fetchWithRetry(item.url, {}, 1);
+    if (!res.text) return item; // couldn't fetch — keep rather than drop silently
+
+    const date = extractDateFromArticleHtml(res.text);
+    if (!date) return item; // no date found — keep, can't be sure it's stale
+
+    if (now - date.getTime() > CUTOFF_MS) {
+      droppedStale++;
+      return null; // confirmed stale — drop
+    }
+
+    return { ...item, pubDate: date.toISOString() };
+  });
+
+  if (droppedStale > 0) {
+    console.log(`  🗑️ ${sourceName}: dropped ${droppedStale} scraped item(s) confirmed stale by article date`);
+  }
+  if (skipped.length > 0) {
+    console.log(`  ⚠️ ${sourceName}: skipped date verification for ${skipped.length} item(s) over the ${MAX_DATE_VERIFICATIONS_PER_SOURCE}-check cap`);
+  }
+
+  return [...checked.filter(Boolean), ...skipped];
+}
+
+// ---------------------------------------------------------------------------
 // Option B: RSS first, scrape if too few items
 // ---------------------------------------------------------------------------
 
@@ -390,6 +474,10 @@ async function collectSourceItems(source) {
     );
   }
 
+  if (mode === 'scrape' && items.length > 0) {
+    items = await verifyScrapedItemDates(items, source.name);
+  }
+
   return { name: source.name, items, mode };
 }
 
@@ -397,11 +485,8 @@ async function collectSourceItems(source) {
 // Cross-day history (dedup fix)
 // ---------------------------------------------------------------------------
 //
-// Scraped homepage items never have a pubDate, so the 24h CUTOFF_MS check in
-// parseFeed() never applies to them — an article can stay linked on a
-// homepage for days and get re-included every run. This history file tracks
-// every URL we've already published in a recent briefing and filters it out
-// of future runs, regardless of where it came from (RSS or scrape).
+// Even with date verification, history guards against anything that slips
+// through (e.g. a site without a detectable date) reappearing day after day.
 
 function historyPath(briefingDir) {
   return path.join(briefingDir, 'history.json');
