@@ -9,74 +9,26 @@ const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
+// Runtime check — fetch / AbortSignal.timeout require Node 18+
+// ---------------------------------------------------------------------------
+
+const [NODE_MAJOR] = process.versions.node.split('.').map(Number);
+if (NODE_MAJOR < 18) {
+  console.error(`❌ Node 18+ required (fetch/AbortSignal.timeout). Current: ${process.versions.node}`);
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-const SOURCES = [
-  {
-    name: 'Мілітарний',
-    url: 'https://militarnyi.com/uk/feed/',
-    fallbackType: 'scrape',
-    fallbackUrl: 'https://militarnyi.com/uk/',
-    minItems: 5,
-    scrapeRules: {
-      includePathContains: ['/uk/news/', '/news/'],
-      excludePathStartsWith: ['/uk/tag/', '/tag/', '/uk/author/', '/author/', '/category/'],
-      minTitleLength: 18,
-    },
-  },
-  {
-    name: 'DOU',
-    url: 'https://dou.ua/feed/',
-    minItems: 1,
-  },
-  {
-    name: 'Mezha.ua',
-    url: 'https://mezha.ua/feed/',
-    fallbackType: 'scrape',
-    fallbackUrl: 'https://mezha.ua/',
-    minItems: 5,
-    scrapeRules: {
-      includePathContains: ['/post/', '/news/', '/article/'],
-      excludePathStartsWith: ['/tag/', '/author/', '/category/'],
-      minTitleLength: 18,
-    },
-  },
-  {
-    name: 'Бабель',
-    url: 'https://babel.ua/rss',
-    fallbackType: 'scrape',
-    fallbackUrl: 'https://babel.ua/',
-    minItems: 1,
-    scrapeRules: {
-      includePathContains: ['/news/', '/probono/'],
-      excludePathStartsWith: ['/tag/', '/tags/', '/authors/', '/author/', '/category/'],
-      minTitleLength: 18,
-    },
-  },
-  {
-    name: 'The Defender',
-    url: 'https://thedefender.media/uk/feed/',
-    fallbackType: 'scrape',
-    fallbackUrl: 'https://thedefender.media/uk/',
-    minItems: 1,
-    scrapeRules: {
-      includePathContains: ['/uk/'],
-      excludePathStartsWith: ['/uk/tag/', '/uk/tags/', '/uk/author/', '/uk/authors/', '/uk/category/'],
-      minTitleLength: 18,
-    },
-  },
-  {
-    name: 'Village',
-    url: 'https://www.village.com.ua/feeds/posts.atom',
-    minItems: 1,
-  },
-  {
-    name: 'The War Zone',
-    url: 'https://www.twz.com/feed',
-    minItems: 1,
-  },
-];
+const SOURCES = require('./sources.config.js');
+
+for (const s of SOURCES) {
+  if (!s.name || !s.url) {
+    throw new Error(`sources.config.js: entry missing name/url: ${JSON.stringify(s)}`);
+  }
+}
 
 const MAX_ITEMS = 30;
 const HOURS_BACK = 24;
@@ -89,6 +41,10 @@ const CONCURRENCY = 3;
 // future briefings, to stop scraped (dateless) homepage items from
 // reappearing day after day.
 const HISTORY_DAYS = 5;
+
+// How many days of generated briefing pages to keep on disk before
+// deleting them. Independent from HISTORY_DAYS (that's for dedup).
+const ROTATION_DAYS = 60;
 
 // Cap how many scraped items get an extra per-article fetch to verify
 // their real publish date. Keeps runtime bounded on sources that return
@@ -407,7 +363,6 @@ async function verifyScrapedItemDates(items, sourceName) {
 
   const now = Date.now();
   let droppedStale = 0;
-  let droppedUnverifiable = 0;
 
   const checked = await mapLimit(toCheck, CONCURRENCY, async (item) => {
     const res = await fetchWithRetry(item.url, {}, 1);
@@ -636,8 +591,25 @@ function buildNavHtml(prevDate, nextDate) {
   return `${NAV_START}\n<nav class="briefing-nav">${prevLink}${nextLink}</nav>\n${NAV_END}`;
 }
 
-function buildHtml(markdown, todayStr, navHtml) {
+// Sources block listing every configured source, wrapped in its own comment
+// markers in case we want to refresh it in place later the same way nav is.
+const SOURCES_START = '<!-- SOURCES_START -->';
+const SOURCES_END = '<!-- SOURCES_END -->';
+
+function buildSourcesHtml(sources) {
+  const links = sources
+    .map(
+      (s) =>
+        `<li><a href="${s.url}" target="_blank" rel="noopener noreferrer">${s.name}</a></li>`
+    )
+    .join('\n');
+
+  return `${SOURCES_START}\n<section class="sources"><h3>Джерела</h3><ul>${links}</ul></section>\n${SOURCES_END}`;
+}
+
+function buildHtml(markdown, todayStr, navHtml, sources) {
   const briefingHtml = renderMarkdownSafe(markdown);
+  const sourcesHtml = buildSourcesHtml(sources);
   const dateLabel = new Date(`${todayStr}T00:00:00`).toLocaleDateString('uk-UA', {
     weekday: 'long',
     year: 'numeric',
@@ -678,6 +650,18 @@ function buildHtml(markdown, todayStr, navHtml) {
     }
     .nav-link:hover { text-decoration: underline; }
     .nav-disabled { color: #ccc; }
+
+    .sources {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid #eee;
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+    }
+    .sources h3 { font-size: 14px; color: #777; margin-bottom: 8px; }
+    .sources ul { padding-left: 18px; margin: 0; }
+    .sources li { margin: 4px 0; font-size: 13px; }
+    .sources a { color: #999; }
+    .sources a:hover { color: #b35a1f; }
   </style>
 </head>
 <body>
@@ -685,6 +669,7 @@ function buildHtml(markdown, todayStr, navHtml) {
   ${navHtml}
   ${briefingHtml}
   ${navHtml}
+  ${sourcesHtml}
   <footer>Generated via Gemini · Sources: ${SOURCES.length} · Window: ${HOURS_BACK}h</footer>
 </body>
 </html>`;
@@ -735,6 +720,35 @@ function refreshAllNavigation(briefingDir) {
   });
 
   console.log(`  ✓ Navigation refreshed across ${dates.length} page(s)`);
+}
+
+// ---------------------------------------------------------------------------
+// Rotation — delete generated briefing pages older than ROTATION_DAYS.
+// Runs before refreshAllNavigation() so prev/next links never point at a
+// file that was just deleted.
+// ---------------------------------------------------------------------------
+
+function cleanupOldBriefings(briefingDir) {
+  const dateFilePattern = /^(\d{4}-\d{2}-\d{2})\.html$/;
+  const cutoff = Date.now() - ROTATION_DAYS * 24 * 60 * 60 * 1000;
+  let removed = 0;
+
+  for (const file of fs.readdirSync(briefingDir)) {
+    const m = file.match(dateFilePattern);
+    if (!m) continue;
+
+    const fileDate = new Date(`${m[1]}T00:00:00`).getTime();
+    if (Number.isNaN(fileDate)) continue;
+
+    if (fileDate < cutoff) {
+      fs.unlinkSync(path.join(briefingDir, file));
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`  🗑️ Rotation: removed ${removed} briefing page(s) older than ${ROTATION_DAYS} days`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +819,7 @@ async function main() {
   // will immediately overwrite it (and every other page's nav) with
   // correct prev/next links based on what's actually on disk.
   const placeholderNav = buildNavHtml(null, null);
-  const html = buildHtml(markdown, todayStr, placeholderNav);
+  const html = buildHtml(markdown, todayStr, placeholderNav, SOURCES);
 
   const outPath = path.join(briefingDir, `${todayStr}.html`);
   fs.writeFileSync(outPath, html, 'utf8');
@@ -835,6 +849,7 @@ async function main() {
   );
 
   saveHistory(briefingDir, history);
+  cleanupOldBriefings(briefingDir);
   refreshAllNavigation(briefingDir);
 
   console.log(`✅ Done! ${outPath}`);
