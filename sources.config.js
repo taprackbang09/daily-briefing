@@ -98,4 +98,14 @@ module.exports = [
     url: 'https://www.twz.com/feed',
     minItems: 1,
   },
+  {
+    name: 'Pravda (ENG)',
+    url: 'https://www.pravda.com.ua/eng/rss/',
+    minItems: 1,
+  },
+  {
+    name: 'NV',
+    url: 'https://nv.ua/ukr/rss/all.xml',
+    minItems: 1,
+  },
 ];
