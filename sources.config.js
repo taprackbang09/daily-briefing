@@ -99,8 +99,8 @@ module.exports = [
     minItems: 1,
   },
   {
-    name: 'Pravda (ENG)',
-    url: 'https://www.pravda.com.ua/eng/rss/',
+    name: 'Pravda',
+    url: 'https://www.pravda.com.ua/rss/',
     minItems: 1,
   },
   {
