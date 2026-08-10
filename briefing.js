@@ -471,4 +471,391 @@ function saveHistory(briefingDir, historyMap) {
   fs.writeFileSync(historyPath(briefingDir), JSON.stringify([...historyMap]), 'utf8');
 }
 
-// truncated...
+function dedupeAgainstHistory(results, historyMap) {
+  const now = Date.now();
+  let removed = 0;
+
+  for (const r of results) {
+    const before = r.items.length;
+    // Filter before mutating history to avoid inconsistent dedup if URLs repeat across sources
+    r.items = r.items.filter((i) => !historyMap.has(i.url));
+    removed += before - r.items.length;
+  }
+
+  // Add all remaining items to history after filtering all sources
+  for (const r of results) {
+    for (const i of r.items) {
+      historyMap.set(i.url, now);
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`  🗑️ Removed ${removed} item(s) already seen in the last ${HISTORY_DAYS} day(s)`);
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// AI summarization
+// ---------------------------------------------------------------------------
+
+async function generateBriefing(sourceData) {
+  const blocks = sourceData
+    .filter((s) => s.items.length > 0)
+    .map(
+      (s) =>
+        `## ${s.name}\n` +
+        s.items
+          .map((i) => `- ${i.title}${i.summary ? ` — ${i.summary}` : ''} [джерело](${i.url})`)
+          .join('\n')
+    )
+    .join('\n\n');
+
+  if (!blocks) return '⚠️ Немає новин за останні 24 години.';
+
+  // Try models in order of preference with fallback
+  let result = null;
+  let lastError = null;
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      console.log(`  → Attempting to use model: ${modelName}`);
+      const model = genAI.getGenerativeModel(
+        { model: modelName },
+        { apiVersion: 'v1' }
+      );
+
+      const prompt = `Ти — редактор щоденного новинного дайджесту українською.
+
+Правила:
+- Відповідай ЛИШЕ markdown.
+- Структура:
+  1) ## 🔥 Головне (3–6 пунктів)
+  2) Тематичні секції (лише доречні)
+- Кожен пункт: одне коротке речення + [↗](url)
+- Без дублювань, без вигадок, без повторів між секціями.
+- Якщо одна новина є в різних джерелах — об'єднай в один пункт.
+
+Дані:
+${blocks}`;
+
+      const response = await model.generateContent(prompt);
+      result = response.response.text();
+      console.log(`  ✓ Successfully generated briefing with ${modelName}`);
+      break;
+    } catch (err) {
+      lastError = err;
+      console.error(`  ✗ Model ${modelName} failed: ${err.message}`);
+      // Continue to next model in fallback chain
+    }
+  }
+
+  if (result) {
+    return result;
+  }
+
+  // All models failed, return graceful fallback
+  console.error(`Gemini error (all ${GEMINI_MODELS.length} model(s) failed): ${lastError?.message}`);
+  return `## 🔥 Головне\n- Не вдалося згенерувати AI-дайджест. Нижче сирі заголовки.\n\n${blocks}`;
+}
+
+// ---------------------------------------------------------------------------
+// HTML renderer
+// ---------------------------------------------------------------------------
+
+function renderMarkdownSafe(md) {
+  const raw = marked.parse(md);
+  return sanitizeHtml(raw, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['h1', 'h2']),
+    allowedAttributes: { a: ['href', 'target', 'rel'] },
+    allowedSchemes: ['http', 'https', 'mailto'],
+  });
+}
+
+// Nav block is wrapped in comment markers so refreshAllNavigation() can
+// find-and-replace it later in already-generated files without touching
+// the rest of the page.
+const NAV_START = '<!-- NAV_START -->';
+const NAV_END = '<!-- NAV_END -->';
+
+function buildNavHtml(prevDate, nextDate) {
+  const prevLink = prevDate
+    ? `<a class="nav-link nav-prev" href="${prevDate}.html">← ${prevDate}</a>`
+    : `<span class="nav-link nav-disabled">←</span>`;
+
+  const nextLink = nextDate
+    ? `<a class="nav-link nav-next" href="${nextDate}.html">${nextDate} →</a>`
+    : `<span class="nav-link nav-disabled">→</span>`;
+
+  return `${NAV_START}\n<nav class="briefing-nav">${prevLink}${nextLink}</nav>\n${NAV_END}`;
+}
+
+// Sources block listing every configured source, wrapped in its own comment
+// markers in case we want to refresh it in place later the same way nav is.
+const SOURCES_START = '<!-- SOURCES_START -->';
+const SOURCES_END = '<!-- SOURCES_END -->';
+
+function buildSourcesHtml(sources) {
+  const links = sources
+    .map(
+      (s) =>
+        `<li><a href="${s.url}" target="_blank" rel="noopener noreferrer">${s.name}</a></li>`
+    )
+    .join('\n');
+
+  return `${SOURCES_START}\n<section class="sources"><h3>Джерела</h3><ul>${links}</ul></section>\n${SOURCES_END}`;
+}
+
+function buildHtml(markdown, todayStr, navHtml, sources) {
+  const briefingHtml = renderMarkdownSafe(markdown);
+  const sourcesHtml = buildSourcesHtml(sources);
+  const dateLabel = new Date(`${todayStr}T00:00:00`).toLocaleDateString('uk-UA', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  return `<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Брифінг — ${todayStr}</title>
+  <style>
+    body { max-width: 760px; margin: 40px auto; padding: 0 16px; font-family: Georgia, serif; line-height: 1.6; color: #222; }
+    h1 { margin-bottom: 20px; }
+    h2 { margin-top: 28px; }
+    a { color: #b35a1f; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { padding-left: 20px; }
+    li { margin: 8px 0; }
+    footer { margin-top: 40px; font-size: 12px; color: #777; }
+
+    .briefing-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      margin: 16px 0 24px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #eee;
+    }
+    .nav-link {
+      color: #b35a1f;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .nav-link:hover { text-decoration: underline; }
+    .nav-disabled { color: #ccc; }
+
+    .sources {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid #eee;
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+    }
+    .sources h3 { font-size: 14px; color: #777; margin-bottom: 8px; }
+    .sources ul { padding-left: 18px; margin: 0; }
+    .sources li { margin: 4px 0; font-size: 13px; }
+    .sources a { color: #999; }
+    .sources a:hover { color: #b35a1f; }
+  </style>
+</head>
+<body>
+  <h1>${dateLabel}</h1>
+  ${navHtml}
+  ${briefingHtml}
+  ${navHtml}
+  ${sourcesHtml}
+  <footer>Generated via Gemini · Sources: ${SOURCES.length} (including NV.ua and Українська правда) · Window: ${HOURS_BACK}h</footer>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation backfill — keeps prev/next arrows correct on every page,
+// including older ones that didn't have a "next" page when first generated.
+// ---------------------------------------------------------------------------
+
+function refreshAllNavigation(briefingDir) {
+  const dateFilePattern = /^(\d{4}-\d{2}-\d{2})\.html$/;
+
+  const dates = fs
+    .readdirSync(briefingDir)
+    .map((f) => f.match(dateFilePattern))
+    .filter(Boolean)
+    .map((m) => m[1])
+    .sort();
+
+  dates.forEach((date, idx) => {
+    const prevDate = idx > 0 ? dates[idx - 1] : null;
+    const nextDate = idx < dates.length - 1 ? dates[idx + 1] : null;
+    const navHtml = buildNavHtml(prevDate, nextDate);
+
+    const filePath = path.join(briefingDir, `${date}.html`);
+    const content = fs.readFileSync(filePath, 'utf8');
+
+    // Create new regex without /g flag for test, use separate regex for replace
+    const navBlockRegex = new RegExp(
+      `${NAV_START}[\\s\\S]*?${NAV_END}`,
+      'g'
+    );
+    const testRegex = new RegExp(
+      `${NAV_START}[\\s\\S]*?${NAV_END}`
+    );
+
+    if (!testRegex.test(content)) {
+      // Old page generated before nav existed — skip rather than corrupt it.
+      console.log(`  ⚠️ ${date}.html has no nav markers, skipping (regenerate it to add nav)`);
+      return;
+    }
+
+    const updated = content.replace(navBlockRegex, navHtml);
+    if (updated !== content) {
+      fs.writeFileSync(filePath, updated, 'utf8');
+    }
+  });
+
+  console.log(`  ✓ Navigation refreshed across ${dates.length} page(s)`);
+}
+
+// ---------------------------------------------------------------------------
+// Rotation — delete generated briefing pages older than ROTATION_DAYS.
+// Runs before refreshAllNavigation() so prev/next links never point at a
+// file that was just deleted.
+// ---------------------------------------------------------------------------
+
+function cleanupOldBriefings(briefingDir) {
+  const dateFilePattern = /^(\d{4}-\d{2}-\d{2})\.html$/;
+  const cutoff = Date.now() - ROTATION_DAYS * 24 * 60 * 60 * 1000;
+  let removed = 0;
+
+  for (const file of fs.readdirSync(briefingDir)) {
+    const m = file.match(dateFilePattern);
+    if (!m) continue;
+
+    const fileDate = new Date(`${m[1]}T00:00:00`).getTime();
+    if (Number.isNaN(fileDate)) continue;
+
+    if (fileDate < cutoff) {
+      fs.unlinkSync(path.join(briefingDir, file));
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`  🗑️ Rotation: removed ${removed} briefing page(s) older than ${ROTATION_DAYS} days`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency helper - fixed race condition
+// ---------------------------------------------------------------------------
+
+async function mapLimit(arr, limit, fn) {
+  const out = new Array(arr.length);
+  let idx = 0;
+  const mutex = { locked: false, queue: [] };
+
+  const getNextIndex = async () => {
+    // Simple spinlock to prevent race condition on idx increment
+    while (mutex.locked) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+    mutex.locked = true;
+    const i = idx++;
+    mutex.locked = false;
+    return i;
+  };
+
+  const workers = Array.from({ length: Math.min(limit, arr.length) }, async () => {
+    while (true) {
+      const i = await getNextIndex();
+      if (i >= arr.length) break;
+      out[i] = await fn(arr[i], i);
+    }
+  });
+
+  await Promise.all(workers);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main() {
+  console.log('🗞️ Starting briefing generation...');
+
+  const briefingDir = path.join(__dirname, 'briefing');
+  fs.mkdirSync(briefingDir, { recursive: true });
+
+  const results = await mapLimit(SOURCES, CONCURRENCY, async (source) => {
+    try {
+      return await collectSourceItems(source);
+    } catch (err) {
+      console.error(`  ✗ ${source.name}: ${err.message}`);
+      return { name: source.name, items: [], mode: 'error' };
+    }
+  });
+
+  const history = loadHistory(briefingDir);
+  dedupeAgainstHistory(results, history);
+
+  const totalItems = results.reduce((sum, s) => sum + s.items.length, 0);
+
+  console.log(`📦 Total items after dedup: ${totalItems}`);
+  for (const r of results) {
+    console.log(`  - ${r.name}: ${r.items.length} (${r.mode})`);
+  }
+
+  const markdown = await generateBriefing(results);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  // Placeholder nav for the initial write — refreshAllNavigation() below
+  // will immediately overwrite it (and every other page's nav) with
+  // correct prev/next links based on what's actually on disk.
+  const placeholderNav = buildNavHtml(null, null);
+  const html = buildHtml(markdown, todayStr, placeholderNav, SOURCES);
+
+  const outPath = path.join(briefingDir, `${todayStr}.html`);
+  fs.writeFileSync(outPath, html, 'utf8');
+
+  const redirect = (target) =>
+    `<!doctype html><html><head><meta http-equiv="refresh" content="0;url=${target}"></head></html>`;
+
+  fs.writeFileSync(path.join(__dirname, 'index.html'), redirect(`briefing/${todayStr}.html`), 'utf8');
+  fs.writeFileSync(path.join(briefingDir, 'index.html'), redirect(`${todayStr}.html`), 'utf8');
+
+  fs.writeFileSync(
+    path.join(briefingDir, 'latest.json'),
+    JSON.stringify(
+      {
+        date: todayStr,
+        totalItems,
+        sources: results.map((r) => ({
+          name: r.name,
+          mode: r.mode,
+          count: r.items.length,
+        })),
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  saveHistory(briefingDir, history);
+  cleanupOldBriefings(briefingDir);
+  refreshAllNavigation(briefingDir);
+
+  console.log(`✅ Done! ${outPath}`);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

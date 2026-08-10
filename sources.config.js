@@ -99,13 +99,13 @@ module.exports = [
     minItems: 1,
   },
   {
-    name: 'Pravda',
-    url: 'https://www.pravda.com.ua/rss/',
+    name: 'NV.ua',
+    url: 'https://nv.ua/ukr/rss/all.xml',
     minItems: 1,
   },
   {
-    name: 'NV',
-    url: 'https://nv.ua/ukr/rss/all.xml',
+    name: 'Українська правда',
+    url: 'https://www.pravda.com.ua/rss/',
     minItems: 1,
   },
 ];
