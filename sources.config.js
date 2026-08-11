@@ -26,6 +26,18 @@
 //                    minTitleLength        - minimum link text length to be
 //                                             treated as a real headline
 //                                             (filters out nav/menu links)
+//                    dateFallbackRegex     - OPTIONAL. Only set this if the
+//                                             site prints a plain-text date
+//                                             (no <meta>/<time> markup) near
+//                                             the top of each article, and
+//                                             you've confirmed the pattern
+//                                             only matches the real publish
+//                                             date, not e.g. a footer
+//                                             copyright year or a date on a
+//                                             "related articles" teaser. Used
+//                                             only for that source — never
+//                                             applied globally. Must have
+//                                             (dd)(mm)(yyyy) capture groups.
 //
 // To add a new source:
 //   1. Find its RSS feed URL (usually /feed/, /rss, or /feeds/posts.atom).
@@ -86,6 +98,10 @@ module.exports = [
       includePathContains: ['/uk/'],
       excludePathStartsWith: ['/uk/tag/', '/uk/tags/', '/uk/author/', '/uk/authors/', '/uk/category/'],
       minTitleLength: 18,
+      // thedefender.media has no <meta>/<time> publish-date markup; it just
+      // prints a DD.MM.YYYY date near the top of the article body. Scoped
+      // to this source only — see the note on dateFallbackRegex above.
+      dateFallbackRegex: /\b(\d{2})\.(\d{2})\.(\d{4})\b/,
     },
   },
   {
@@ -103,9 +119,11 @@ module.exports = [
     url: 'https://nv.ua/ukr/rss/all.xml',
     minItems: 1,
   },
-  {
-    name: 'Українська правда',
-    url: 'https://www.pravda.com.ua/rss/',
-    minItems: 1,
-  },
+  // 'Українська правда' (pravda.com.ua) removed: its RSS endpoint sits
+  // behind a Cloudflare JS bot-management challenge ("Just a moment...",
+  // cf-mitigated: challenge header). A plain fetch() can never pass this —
+  // it requires executing Cloudflare's challenge script like a real
+  // browser would. Re-add only if you find an unprotected alternate feed
+  // path, or wire up a headless-browser fetch (Playwright) just for this
+  // source.
 ];
