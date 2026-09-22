@@ -696,20 +696,44 @@ function siteUrlFor(s) {
   }
 }
 
-function buildSourcesHtml(sources) {
+// Classify how a source did this run, using the per-source result produced
+// by collectSourceItems (mode + item count). Returns a small badge shown
+// next to each source in the footer so a failing/empty feed is visible on
+// the published page, not just in the CI logs.
+//   ok   - fetched and contributed fresh item(s)
+//   empty- fetched fine, but nothing fresh within the window (or all deduped)
+//   fail - couldn't fetch/parse at all (network error, block, bad feed)
+function sourceStatus(result) {
+  if (!result) return { kind: 'unknown', label: '', title: 'no data this run' };
+  const count = result.items ? result.items.length : 0;
+  if (result.mode === 'error' || result.mode === 'none') {
+    return { kind: 'fail', label: '✗', title: 'fetch failed' };
+  }
+  if (count > 0) {
+    return { kind: 'ok', label: `✓ ${count}`, title: `${count} item(s) via ${result.mode}` };
+  }
+  return { kind: 'empty', label: '○', title: `fetched (${result.mode}), no fresh items` };
+}
+
+function buildSourcesHtml(sources, results = []) {
+  const byName = new Map(results.map((r) => [r.name, r]));
+
   const links = sources
-    .map(
-      (s) =>
-        `<li><a href="${siteUrlFor(s)}" target="_blank" rel="noopener noreferrer">${s.name}</a></li>`
-    )
+    .map((s) => {
+      const st = sourceStatus(byName.get(s.name));
+      const badge = st.label
+        ? ` <span class="src-status src-${st.kind}" title="${st.title}">${st.label}</span>`
+        : '';
+      return `<li><a href="${siteUrlFor(s)}" target="_blank" rel="noopener noreferrer">${s.name}</a>${badge}</li>`;
+    })
     .join('\n');
 
   return `${SOURCES_START}\n<section class="sources"><h3>Джерела</h3><ul>${links}</ul></section>\n${SOURCES_END}`;
 }
 
-function buildHtml(markdown, todayStr, navHtml, sources, modelUsed) {
+function buildHtml(markdown, todayStr, navHtml, sources, modelUsed, results = []) {
   const briefingHtml = renderMarkdownSafe(markdown);
-  const sourcesHtml = buildSourcesHtml(sources);
+  const sourcesHtml = buildSourcesHtml(sources, results);
   const dateLabel = new Date(`${todayStr}T00:00:00`).toLocaleDateString('uk-UA', {
     weekday: 'long',
     year: 'numeric',
@@ -762,6 +786,10 @@ function buildHtml(markdown, todayStr, navHtml, sources, modelUsed) {
     .sources li { margin: 4px 0; font-size: 13px; }
     .sources a { color: #999; }
     .sources a:hover { color: #b35a1f; }
+    .src-status { font-size: 11px; margin-left: 4px; }
+    .src-ok { color: #2e7d32; }
+    .src-empty { color: #b0b0b0; }
+    .src-fail { color: #c0392b; }
   </style>
 </head>
 <body>
@@ -925,7 +953,7 @@ async function main() {
   // will immediately overwrite it (and every other page's nav) with
   // correct prev/next links based on what's actually on disk.
   const placeholderNav = buildNavHtml(null, null);
-  const html = buildHtml(markdown, todayStr, placeholderNav, SOURCES, modelUsed);
+  const html = buildHtml(markdown, todayStr, placeholderNav, SOURCES, modelUsed, results);
 
   const outPath = path.join(briefingDir, `${todayStr}.html`);
   fs.writeFileSync(outPath, html, 'utf8');
