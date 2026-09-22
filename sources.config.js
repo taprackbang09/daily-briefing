@@ -77,6 +77,16 @@ module.exports = [
     },
   },
   {
+    // Defence-tech / gadgets vertical of the Mezha network. Its RSS feed is
+    // reliable and returns fresh, dated items (same WordPress stack as
+    // mezha.ua), so RSS alone is enough — no scrape fallback needed. Article
+    // URLs are single-segment slugs (/slug-NNNNNN/), which the homepage
+    // scraper's "2+ path segments" heuristic would reject anyway.
+    name: 'Oboronka.Mezha',
+    url: 'https://oboronka.mezha.ua/feed/',
+    minItems: 1,
+  },
+  {
     name: 'Бабель',
     url: 'https://babel.ua/rss',
     fallbackType: 'scrape',
@@ -89,18 +99,28 @@ module.exports = [
     },
   },
   {
+    // NOTE: thedefender.media has NO working RSS feed. /uk/feed/ (and /feed/)
+    // return HTTP 200 but serve the full homepage HTML, not XML, so parseFeed
+    // finds 0 <item>/<entry> nodes and the source always runs via the scrape
+    // fallback below. That's expected and works. The site also publishes
+    // infrequently (a handful of posts a week), so some daily briefings will
+    // legitimately have no Defender items - that's the site's cadence, not a
+    // bug. Article URLs look like /uk/2026/09/<slug>/.
     name: 'The Defender',
     url: 'https://thedefender.media/uk/feed/',
     fallbackType: 'scrape',
     fallbackUrl: 'https://thedefender.media/uk/',
     minItems: 1,
     scrapeRules: {
-      includePathContains: ['/uk/'],
-      excludePathStartsWith: ['/uk/tag/', '/uk/tags/', '/uk/author/', '/uk/authors/', '/uk/category/'],
+      // Real, dated articles live under /uk/<year>/... so restrict to those;
+      // otherwise nav/section pages (/uk/about/, /uk/categories/...) leak in.
+      includePathContains: ['/uk/2024/', '/uk/2025/', '/uk/2026/', '/uk/2027/'],
+      excludePathStartsWith: ['/uk/tag/', '/uk/tags/', '/uk/author/', '/uk/authors/', '/uk/category/', '/uk/categories/'],
       minTitleLength: 18,
-      // thedefender.media has no <meta>/<time> publish-date markup; it just
-      // prints a DD.MM.YYYY date near the top of the article body. Scoped
-      // to this source only — see the note on dateFallbackRegex above.
+      // Each article carries a real <meta property="article:published_time">,
+      // so date verification works off that. This DD.MM.YYYY fallback is a
+      // scoped backstop in case the meta tag ever disappears — see the note
+      // on dateFallbackRegex above.
       dateFallbackRegex: /\b(\d{2})\.(\d{2})\.(\d{4})\b/,
     },
   },

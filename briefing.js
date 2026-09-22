@@ -51,8 +51,17 @@ const ROTATION_DAYS = 60;
 // a lot of scrape candidates.
 const MAX_DATE_VERIFICATIONS_PER_SOURCE = 20;
 
-// Supported Gemini models with fallback chain
-const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.0-flash'];
+// Supported Gemini models, tried in order with automatic fallback.
+// 3.8 Flash is the newest Flash tier (better instruction-following + non-EN
+// quality than 3.6 at the same/lower price), so it's the primary. If the ID
+// is ever unavailable for this key/apiVersion, the loop below just logs a
+// failure and falls through to the next entry, so listing it first is safe.
+const GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-2.0-flash',
+];
 
 if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY is missing in .env');

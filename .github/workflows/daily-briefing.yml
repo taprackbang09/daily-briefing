@@ -2,8 +2,15 @@ name: Daily Briefing Generation
 
 on:
   schedule:
-    # Runs at 05:00 UTC (08:00 AM Kyiv time)
-    - cron: '0 5 * * *'
+    # Runs at 05:17 UTC (08:17 AM Kyiv time in summer) so overnight news is
+    # ready in the morning.
+    #
+    # NOTE: GitHub Actions does NOT run scheduled jobs on time. `schedule`
+    # events sit in a shared queue and can be delayed, worst at the top of
+    # the hour (minute :00) on "round" UTC hours. We use the odd minute :17
+    # to dodge that top-of-hour congestion. cron here is always UTC and does
+    # not follow Kyiv DST.
+    - cron: '17 5 * * *'
   workflow_dispatch: # Allows you to trigger it manually from the Actions tab
 
 permissions:
