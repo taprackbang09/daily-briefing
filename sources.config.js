@@ -62,6 +62,7 @@ module.exports = [
   {
     name: 'DOU',
     url: 'https://dou.ua/feed/',
+    site: 'https://dou.ua/',
     minItems: 1,
   },
   {
@@ -84,6 +85,7 @@ module.exports = [
     // scraper's "2+ path segments" heuristic would reject anyway.
     name: 'Oboronka.Mezha',
     url: 'https://oboronka.mezha.ua/feed/',
+    site: 'https://oboronka.mezha.ua/',
     minItems: 1,
   },
   {
@@ -127,16 +129,19 @@ module.exports = [
   {
     name: 'Village',
     url: 'https://www.village.com.ua/feeds/posts.atom',
+    site: 'https://www.village.com.ua/',
     minItems: 1,
   },
   {
     name: 'The War Zone',
     url: 'https://www.twz.com/feed',
+    site: 'https://www.twz.com/',
     minItems: 1,
   },
   {
     name: 'NV.ua',
     url: 'https://nv.ua/ukr/rss/all.xml',
+    site: 'https://nv.ua/ukr',
     minItems: 1,
   },
   // 'Українська правда' (pravda.com.ua) removed: its RSS endpoint sits

@@ -586,10 +586,11 @@ function buildSourceDataBlock(sourceData) {
 async function generateBriefing(sourceData) {
   const blocks = buildSourceDataBlock(sourceData);
 
-  if (!blocks) return '⚠️ Немає новин за останні 24 години.';
+  if (!blocks) return { markdown: '⚠️ Немає новин за останні 24 години.', model: null };
 
   // Try models in order of preference with fallback
   let result = null;
+  let usedModel = null;
   let lastError = null;
 
   for (const modelName of GEMINI_MODELS) {
@@ -623,6 +624,7 @@ ${blocks}
 
       const response = await model.generateContent(prompt);
       result = response.response.text();
+      usedModel = modelName;
       console.log(`  ✓ Successfully generated briefing with ${modelName}`);
       break;
     } catch (err) {
@@ -633,12 +635,15 @@ ${blocks}
   }
 
   if (result) {
-    return result;
+    return { markdown: result, model: usedModel };
   }
 
   // All models failed, return graceful fallback
   console.error(`Gemini error (all ${GEMINI_MODELS.length} model(s) failed): ${lastError?.message}`);
-  return `## 🔥 Головне\n- Не вдалося згенерувати AI-дайджест. Нижче сирі заголовки.\n\n${blocks}`;
+  return {
+    markdown: `## 🔥 Головне\n- Не вдалося згенерувати AI-дайджест. Нижче сирі заголовки.\n\n${blocks}`,
+    model: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -677,18 +682,32 @@ function buildNavHtml(prevDate, nextDate) {
 const SOURCES_START = '<!-- SOURCES_START -->';
 const SOURCES_END = '<!-- SOURCES_END -->';
 
+// Resolve the human-facing website URL for a source, preferring an explicit
+// `site` field, then the scrape `fallbackUrl` (usually the homepage), and
+// finally the origin of the RSS feed URL. We link readers to the website,
+// not the raw RSS/Atom feed.
+function siteUrlFor(s) {
+  if (s.site) return s.site;
+  if (s.fallbackUrl) return s.fallbackUrl;
+  try {
+    return new URL(s.url).origin + '/';
+  } catch {
+    return s.url;
+  }
+}
+
 function buildSourcesHtml(sources) {
   const links = sources
     .map(
       (s) =>
-        `<li><a href="${s.url}" target="_blank" rel="noopener noreferrer">${s.name}</a></li>`
+        `<li><a href="${siteUrlFor(s)}" target="_blank" rel="noopener noreferrer">${s.name}</a></li>`
     )
     .join('\n');
 
   return `${SOURCES_START}\n<section class="sources"><h3>Джерела</h3><ul>${links}</ul></section>\n${SOURCES_END}`;
 }
 
-function buildHtml(markdown, todayStr, navHtml, sources) {
+function buildHtml(markdown, todayStr, navHtml, sources, modelUsed) {
   const briefingHtml = renderMarkdownSafe(markdown);
   const sourcesHtml = buildSourcesHtml(sources);
   const dateLabel = new Date(`${todayStr}T00:00:00`).toLocaleDateString('uk-UA', {
@@ -751,7 +770,7 @@ function buildHtml(markdown, todayStr, navHtml, sources) {
   ${briefingHtml}
   ${navHtml}
   ${sourcesHtml}
-  <footer>Generated via Gemini · Sources: ${sources.length} · Window: ${HOURS_BACK}h</footer>
+  <footer>Generated via ${modelUsed || 'fallback (AI unavailable)'} · Sources: ${sources.length} · Window: ${HOURS_BACK}h</footer>
 </body>
 </html>`;
 }
@@ -888,14 +907,25 @@ async function main() {
     console.log(`  - ${r.name}: ${r.items.length} (${r.mode})`);
   }
 
-  const markdown = await generateBriefing(results);
+  // Guardrail: if every source came back empty (network outage, mass
+  // Cloudflare block, etc.), don't overwrite index.html / latest.json with
+  // an empty "no news" page — that would replace yesterday's still-valid
+  // briefing with nothing. Fail loudly instead so the workflow surfaces it
+  // and the previously published briefing stays live.
+  if (totalItems === 0) {
+    console.error('❌ No items collected from any source — aborting without writing (keeping the previous briefing live).');
+    process.exit(1);
+  }
+
+  const { markdown, model: modelUsed } = await generateBriefing(results);
+  console.log(`  ℹ️ Model used: ${modelUsed || 'none (fallback)'}`);
 
   const todayStr = new Date().toISOString().slice(0, 10);
   // Placeholder nav for the initial write — refreshAllNavigation() below
   // will immediately overwrite it (and every other page's nav) with
   // correct prev/next links based on what's actually on disk.
   const placeholderNav = buildNavHtml(null, null);
-  const html = buildHtml(markdown, todayStr, placeholderNav, SOURCES);
+  const html = buildHtml(markdown, todayStr, placeholderNav, SOURCES, modelUsed);
 
   const outPath = path.join(briefingDir, `${todayStr}.html`);
   fs.writeFileSync(outPath, html, 'utf8');
@@ -911,6 +941,7 @@ async function main() {
     JSON.stringify(
       {
         date: todayStr,
+        model: modelUsed,
         totalItems,
         sources: results.map((r) => ({
           name: r.name,
