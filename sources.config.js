@@ -90,7 +90,10 @@ module.exports = [
   },
   {
     name: 'Бабель',
-    url: 'https://babel.ua/rss',
+    // Real feed lives at /rss.xml (188 items, fresh). The old /rss and
+    // /feed paths now 404, so we relied on the scrape fallback — kept below
+    // as a safety net if the feed ever moves again.
+    url: 'https://babel.ua/rss.xml',
     fallbackType: 'scrape',
     fallbackUrl: 'https://babel.ua/',
     minItems: 1,
