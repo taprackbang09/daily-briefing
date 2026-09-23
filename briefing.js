@@ -143,10 +143,18 @@ function shouldExcludePath(pathname, rules = {}) {
 
 async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (compatible; DailyBriefingBot/4.0)',
+    // Present as a real, current Chrome on macOS. Cloudflare's bot management
+    // challenges obvious bot User-Agents (e.g. "...DailyBriefingBot") far more
+    // aggressively than genuine browser strings, which caused intermittent
+    // cf-mitigated: challenge failures from datacenter IPs (GitHub Actions).
+    'User-Agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
     'Accept':
       'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, */*',
     'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
+    'Sec-CH-UA': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+    'Sec-CH-UA-Mobile': '?0',
+    'Sec-CH-UA-Platform': '"macOS"',
     ...options.headers,
   };
 
@@ -160,14 +168,23 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
       });
 
       if ([403, 404, 410].includes(resp.status)) {
-        // Cloudflare's bot-management "Just a moment..." challenge page also
-        // returns here. It can't be solved by a plain fetch() — it requires
-        // executing JS / passing browser fingerprint checks — so flag it
-        // distinctly rather than lumping it in with an ordinary 403.
+        // Cloudflare's bot-management challenge also surfaces as a 403 here,
+        // flagged by the cf-mitigated: challenge header. That challenge is
+        // probabilistic (IP/reputation based), so unlike a plain 403/404/410
+        // it's often transient — a retry with backoff frequently succeeds
+        // from the same host. Retry those; give up immediately on genuine
+        // 403/404/410.
         const cfChallenge = resp.headers.get('cf-mitigated') === 'challenge';
+        if (cfChallenge && attempt < retries) {
+          console.warn(
+            `  ⚠️ ${url} → Cloudflare bot challenge; retrying (${attempt + 1}/${retries})...`
+          );
+          await sleep(RETRY_DELAY_MS * (attempt + 1));
+          continue;
+        }
         console.warn(
           cfChallenge
-            ? `  ⚠️ ${url} → blocked by Cloudflare bot challenge (needs a real browser; skipping)`
+            ? `  ⚠️ ${url} → blocked by Cloudflare bot challenge after ${attempt + 1} attempt(s); skipping`
             : `  ⚠️ ${url} → HTTP ${resp.status} (not retrying)`
         );
         return { text: null, status: resp.status };
