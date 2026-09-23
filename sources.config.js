@@ -147,11 +147,13 @@ module.exports = [
     site: 'https://nv.ua/ukr',
     minItems: 1,
   },
-  // 'Українська правда' (pravda.com.ua) removed: its RSS endpoint sits
-  // behind a Cloudflare JS bot-management challenge ("Just a moment...",
-  // cf-mitigated: challenge header). A plain fetch() can never pass this —
-  // it requires executing Cloudflare's challenge script like a real
-  // browser would. Re-add only if you find an unprotected alternate feed
-  // path, or wire up a headless-browser fetch (Playwright) just for this
-  // source.
+  {
+    // NOTE: use /rss/ (latest news), NOT /rss/view_mainnews/ — the latter is
+    // a static editorial list whose items are years old and would all be
+    // dropped by the freshness window. The former is a live, fresh feed.
+    name: 'Українська правда',
+    url: 'https://www.pravda.com.ua/rss/',
+    site: 'https://www.pravda.com.ua/',
+    minItems: 1,
+  },
 ];
