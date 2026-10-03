@@ -31,7 +31,7 @@ for (const s of SOURCES) {
 }
 
 const MAX_ITEMS = Infinity; // no per-source cap: last-24h filter already bounds volume
-const HOURS_BACK = 24;
+const HOURS_BACK = process.env.HOURS_BACK ? Number(process.env.HOURS_BACK) : 24;
 const CUTOFF_MS = HOURS_BACK * 60 * 60 * 1000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1500;
