@@ -1,17 +1,17 @@
 {
-  "date": "2026-10-19",
+  "date": "2026-10-20",
   "model": "gemini-3.8-flash",
-  "totalItems": 121,
+  "totalItems": 182,
   "sources": [
     {
       "name": "Мілітарний",
       "mode": "scrape",
-      "count": 23
+      "count": 34
     },
     {
       "name": "DOU",
       "mode": "rss",
-      "count": 1
+      "count": 5
     },
     {
       "name": "Mezha.ua",
@@ -21,32 +21,32 @@
     {
       "name": "Oboronka.Mezha",
       "mode": "rss",
-      "count": 4
+      "count": 10
     },
     {
       "name": "Бабель",
       "mode": "rss",
-      "count": 19
+      "count": 29
     },
     {
       "name": "The Defender",
       "mode": "scrape",
-      "count": 0
+      "count": 14
     },
     {
       "name": "Village",
       "mode": "rss",
-      "count": 7
+      "count": 16
     },
     {
       "name": "The War Zone",
       "mode": "rss",
-      "count": 1
+      "count": 5
     },
     {
       "name": "NV.ua",
       "mode": "rss",
-      "count": 36
+      "count": 39
     },
     {
       "name": "Українська правда",
