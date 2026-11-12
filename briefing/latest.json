@@ -1,17 +1,17 @@
 {
-  "date": "2026-11-11",
+  "date": "2026-11-12",
   "model": "gemini-3.8-flash",
-  "totalItems": 186,
+  "totalItems": 166,
   "sources": [
     {
       "name": "Мілітарний",
       "mode": "scrape",
-      "count": 37
+      "count": 31
     },
     {
       "name": "DOU",
       "mode": "rss",
-      "count": 3
+      "count": 5
     },
     {
       "name": "Mezha.ua",
@@ -26,17 +26,17 @@
     {
       "name": "Бабель",
       "mode": "rss",
-      "count": 30
+      "count": 16
     },
     {
       "name": "The Defender",
       "mode": "scrape",
-      "count": 13
+      "count": 12
     },
     {
       "name": "Village",
       "mode": "rss",
-      "count": 20
+      "count": 19
     },
     {
       "name": "The War Zone",
