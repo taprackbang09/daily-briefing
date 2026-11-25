@@ -1,7 +1,7 @@
 {
-  "date": "2026-11-24",
+  "date": "2026-11-25",
   "model": "gemini-3.8-flash",
-  "totalItems": 175,
+  "totalItems": 186,
   "sources": [
     {
       "name": "Мілітарний",
@@ -26,27 +26,27 @@
     {
       "name": "Бабель",
       "mode": "rss",
-      "count": 28
+      "count": 32
     },
     {
       "name": "The Defender",
       "mode": "scrape",
-      "count": 15
+      "count": 17
     },
     {
       "name": "Village",
       "mode": "rss",
-      "count": 13
+      "count": 14
     },
     {
       "name": "The War Zone",
       "mode": "rss",
-      "count": 3
+      "count": 5
     },
     {
       "name": "NV.ua",
       "mode": "rss",
-      "count": 38
+      "count": 40
     },
     {
       "name": "Українська правда",
